@@ -13,8 +13,8 @@ ors:
 # File Paths (relative to project root, or absolute paths)
 files:
   input_file: "KMHFR_MNCH_Facilities_Only.xlsx"
-  output_csv: "population_analysis_results.csv"
-  output_map: "isochrone_map.html"
+  output_csv: "json/population_analysis_results.csv"
+  output_map: "maps/isochrone_map.html"
 
 # Analysis Parameters
 analysis:

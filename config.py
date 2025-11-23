@@ -99,7 +99,11 @@ class Config:
         if 'files' in self._config:
             for key in ['input_file', 'output_csv', 'output_map']:
                 if key in self._config['files']:
-                    self._config['files'][key] = str(_resolve_path(self._config['files'][key]))
+                    resolved_path = _resolve_path(self._config['files'][key])
+                    # Create output directories if they don't exist
+                    if key in ['output_csv', 'output_map']:
+                        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+                    self._config['files'][key] = str(resolved_path)
         
         if 'logging' in self._config and 'file' in self._config['logging']:
             log_file = _resolve_path(self._config['logging']['file'])

@@ -103,16 +103,28 @@ def generate_isochrone_map(
     '''
     m.get_root().html.add_child(folium.Element(title_html))
     
+    # Create maps directory if it doesn't exist
+    from pathlib import Path
+    maps_dir = Path("maps")
+    maps_dir.mkdir(parents=True, exist_ok=True)
+    
     # Save map
     if output_file is None:
         # Clean facility name for filename
         safe_name = facility_name.replace(' ', '_').replace('/', '_')
-        output_file = f"isochrone_{safe_name}.html"
+        output_file = maps_dir / f"isochrone_{safe_name}.html"
+    else:
+        # If path provided, ensure it's in maps directory
+        output_path = Path(output_file)
+        if not output_path.is_absolute() and not str(output_path).startswith("maps/"):
+            output_file = maps_dir / output_path.name
+        else:
+            output_file = Path(output_file)
     
-    m.save(output_file)
+    m.save(str(output_file))
     logger.info(f"Map saved to: {output_file}")
     
-    return output_file
+    return str(output_file)
 
 
 def main():
@@ -192,9 +204,14 @@ def main():
             '''
             m.get_root().html.add_child(folium.Element(title_html))
             
+            # Create maps directory if it doesn't exist
+            from pathlib import Path
+            maps_dir = Path("maps")
+            maps_dir.mkdir(parents=True, exist_ok=True)
+            
             safe_name = facility_name.replace(' ', '_').replace('/', '_')
-            output_file = f"isochrone_{safe_name}.html"
-            m.save(output_file)
+            output_file = maps_dir / f"isochrone_{safe_name}.html"
+            m.save(str(output_file))
             
             print(f"\n✓ Success! Isochrone map generated: {output_file}")
             print(f"Open {output_file} in your browser to view the map.")

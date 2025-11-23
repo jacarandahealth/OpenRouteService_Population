@@ -284,9 +284,16 @@ if results:
         '''
         m.get_root().html.add_child(folium.Element(legend_html))
     
+    # Create output directories if they don't exist
+    from pathlib import Path
+    maps_dir = Path("maps")
+    json_dir = Path("json")
+    maps_dir.mkdir(parents=True, exist_ok=True)
+    json_dir.mkdir(parents=True, exist_ok=True)
+    
     # Save map
-    output_file = "kakamega_wajir_isochrone_map.html"
-    m.save(output_file)
+    output_file = maps_dir / "kakamega_wajir_isochrone_map.html"
+    m.save(str(output_file))
     print(f"✓ Map saved to: {output_file}")
     print(f"\nOpen {output_file} in your browser to view the map!")
     
@@ -323,9 +330,10 @@ if results:
         }
     }
     
-    with open("kakamega_wajir_isochrone_results.json", "w") as f:
+    json_file = json_dir / "kakamega_wajir_isochrone_results.json"
+    with open(json_file, "w") as f:
         json.dump(results_json, f, indent=2)
-    print("✓ Results saved to: kakamega_wajir_isochrone_results.json")
+    print(f"✓ Results saved to: {json_file}")
 else:
     print("✗ No facilities processed successfully")
 

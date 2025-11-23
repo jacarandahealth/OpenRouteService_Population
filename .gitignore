@@ -33,3 +33,8 @@ files/*.pbf
 # OS
 .DS_Store
 Thumbs.db
+
+# Generated output files
+maps/*.html
+json/*.json
+json/*.csv
