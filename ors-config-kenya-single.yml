@@ -1,0 +1,87 @@
+#### openrouteservice settings file #####
+# Single profile configuration for Kenya OSM data using profile_default
+
+server:
+  port: 8080
+  servlet:
+    context-path: /ors
+
+spring:
+  profiles:
+    active: default
+
+ors:
+  cors:
+    allowed_origins: "*"
+  endpoints:
+    routing:
+      enabled: true
+    matrix:
+      enabled: true
+    isochrones:
+      enabled: true
+      maximum_locations: 2
+      maximum_intervals: 1
+      allow_compute_area: true
+      maximum_range_distance_default: 50000
+      maximum_range_time_default: 18000
+      maximum_range_time:
+        - profiles: driving-car
+          value: 3600
+    snap:
+      enabled: true
+  engine:
+    source_file: /home/ors/files/kenya-latest.osm.pbf
+    init_threads: 1
+    preparation_mode: false
+    graphs_root_path: ./graphs
+    graphs_data_access: RAM_STORE
+    elevation:
+      preprocessed: false
+      data_access: MMAP
+      cache_clear: false
+      provider: multi
+      cache_path: ./elevation_cache
+    profile_default:
+      enabled: true
+      elevation: true
+      elevation_smoothing: false
+      encoder_flags_size: 8
+      instructions: true
+      optimize: false
+      traffic: false
+      maximum_distance: 100000
+      maximum_distance_dynamic_weights: 100000
+      maximum_distance_avoid_areas: 100000
+      maximum_waypoints: 50
+      maximum_snapping_radius: 400
+      maximum_distance_alternative_routes: 100000
+      maximum_distance_round_trip_routes: 100000
+      maximum_speed_lower_bound: 80
+      maximum_visited_nodes: 1000000
+      location_index_resolution: 500
+      location_index_search_iterations: 4
+      force_turn_costs: false
+      interpolate_bridges_and_tunnels: true
+      encoder_options:
+        turn_costs: true
+        block_fords: false
+        use_acceleration: true
+      preparation:
+        min_network_size: 200
+        methods:
+          ch:
+            enabled: true
+            threads: 1
+            weightings: fastest
+          core:
+            enabled: true
+            threads: 1
+            weightings: fastest,shortest
+            landmarks: 64
+            lmsets: highways;allow_all
+      execution:
+        methods:
+          core:
+            active_landmarks: 6
+

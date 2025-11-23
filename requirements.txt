@@ -1,0 +1,10 @@
+geemap
+earthengine-api
+openrouteservice
+pandas
+openpyxl
+folium
+jinja2
+pytest
+pytest-mock
+pyyaml

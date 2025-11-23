@@ -1,0 +1,47 @@
+# Configuration file for OpenRouteService Population Analysis
+# Values can be overridden by environment variables (uppercase, with underscores)
+
+# OpenRouteService Configuration
+ors:
+  base_url: "http://34.134.47.254:8080/ors"
+  health_url: "http://34.134.47.254:8080/ors/v2/health"
+  api_key: "dummy_key"  # Not needed for self-hosted, but library may require it
+  timeout: 30
+  retry_attempts: 3
+  retry_delay: 1  # seconds, will use exponential backoff
+
+# File Paths (relative to project root, or absolute paths)
+files:
+  input_file: "KMHFR_MNCH_Facilities_Only.xlsx"
+  output_csv: "population_analysis_results.csv"
+  output_map: "isochrone_map.html"
+
+# Analysis Parameters
+analysis:
+  range_seconds: 3600  # 1 hour in seconds
+  target_levels: ["4", "5", "6"]  # Facility levels to filter
+  sleep_between_requests: 0.5  # seconds to wait between ORS API calls
+
+# Google Earth Engine Configuration
+gee:
+  dataset: "WorldPop/GP/100m/population/2020"
+  scale: 100  # meters
+  max_pixels: 1000000000  # 1e9
+
+# Logging Configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  file: "logs/analysis.log"
+  console_level: "INFO"
+  file_level: "DEBUG"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"
+
+# Map Configuration
+map:
+  center_lat: 0.0236  # Kenya center
+  center_lon: 37.9062
+  zoom_start: 6
+  isochrone_color: "blue"
+  isochrone_opacity: 0.3
+

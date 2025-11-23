@@ -1,0 +1,33 @@
+services:
+  ors-app:
+    container_name: ors-app
+    ports:
+      - "8080:8082"
+      - "9001:9001"
+    image: openrouteservice/openrouteservice:v8.1.0
+    restart: always
+    user: "${UID:-0}:${GID:-0}"
+    volumes:
+      - ./graphs:/home/ors/graphs
+      - ./elevation_cache:/home/ors/elevation_cache
+      - ./logs:/home/ors/logs
+      - ./config:/home/ors/config
+      - ./files:/home/ors/files
+    environment:
+      # CRITICAL: Environment variables take precedence over config files
+      - REBUILD_GRAPHS=True
+      - ORS_CONFIG_LOCATION=/home/ors/config/ors-config.yml
+      # Try both formats for ORS 9.5.1 compatibility
+      - ors.engine.source_file=/home/ors/files/kenya-latest.osm.pbf
+      - ORS_ENGINE_SOURCE_FILE=/home/ors/files/kenya-latest.osm.pbf
+      - ors.engine.graphs_root_path=/home/ors/graphs
+      - ors.engine.elevation.cache_path=/home/ors/elevation_cache
+      # Java memory settings
+      - XMS=2g
+      - XMX=8g
+      # Logging
+      - CONTAINER_LOG_LEVEL=DEBUG
+      - logging.level.org.heigit=DEBUG
+      # Additional Java options - include source_file as system property
+      - "JAVA_OPTS=-Djava.awt.headless=true -server -XX:TargetSurvivorRatio=75 -XX:SurvivorRatio=64 -XX:MaxTenuringThreshold=3 -XX:+UseG1GC -XX:+ScavengeBeforeFullGC -XX:ParallelGCThreads=4 -Dors.engine.source_file=/home/ors/files/kenya-latest.osm.pbf"
+      - "CATALINA_OPTS=-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=9001 -Dcom.sun.management.jmxremote.rmi.port=9001 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Djava.rmi.server.hostname=localhost"
