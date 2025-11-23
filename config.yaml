@@ -24,7 +24,7 @@ analysis:
 
 # Google Earth Engine Configuration
 gee:
-  dataset: "WorldPop/GP/100m/population/2020"
+  dataset: "WorldPop/GP/100m/pop"  # WorldPop Global Population dataset (recommended)
   scale: 100  # meters
   max_pixels: 1000000000  # 1e9
 

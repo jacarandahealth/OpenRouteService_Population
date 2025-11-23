@@ -185,7 +185,7 @@ class Config:
     @property
     def gee_dataset(self) -> str:
         """Get GEE dataset name."""
-        return self.get('gee.dataset', 'WorldPop/GP/100m/population/2020')
+        return self.get('gee.dataset', 'WorldPop/GP/100m/pop')
     
     @property
     def gee_scale(self) -> int:

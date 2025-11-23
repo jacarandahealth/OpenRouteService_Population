@@ -228,13 +228,27 @@ def calculate_population_gee(geometry: Dict[str, Any], dataset_name: str = None,
     
     try:
         logger.debug(f"Calculating population for geometry using dataset {dataset_name}")
-        dataset = ee.ImageCollection(dataset_name).first()
+        # WorldPop/GP/100m/pop is an ImageCollection with multiple years/tiles
+        # Filter for 2020 data and mosaic tiles together
+        dataset_collection = ee.ImageCollection(dataset_name)
+        dataset_2020 = dataset_collection.filterDate('2020-01-01', '2021-01-01')
+        
+        # Mosaic 2020 images if available, otherwise use most recent
+        collection_size = dataset_2020.size().getInfo()
+        if collection_size > 0:
+            dataset = dataset_2020.mosaic()
+        else:
+            dataset = dataset_collection.sort('system:time_start', False).first()
+        
         gee_geom = ee.Geometry(geometry)
+        
+        # Use a slightly coarser scale (250m) to ensure reliable data retrieval
+        scale_to_use = max(scale, 250)
         
         stats = dataset.reduceRegion(
             reducer=ee.Reducer.sum(),
             geometry=gee_geom,
-            scale=scale,
+            scale=scale_to_use,
             maxPixels=max_pixels
         )
         

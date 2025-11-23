@@ -1,7 +1,0 @@
-ors:
-  engine:
-    source_file: /home/ors/files/kenya-latest.osm.pbf
-  profiles:
-    driving-car:
-      enabled: true
-
