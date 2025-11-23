@@ -168,9 +168,13 @@ class Config:
         return self.get('files.output_map', 'isochrone_map.html')
     
     @property
-    def range_seconds(self) -> int:
-        """Get isochrone range in seconds."""
-        return self.get('analysis.range_seconds', 3600)
+    def range_seconds(self):
+        """Get isochrone range(s) in seconds. Returns list if multiple ranges, int if single."""
+        value = self.get('analysis.range_seconds', [900, 1800, 2700])
+        # Handle backward compatibility - if single value, convert to list
+        if isinstance(value, int):
+            return [value]
+        return value
     
     @property
     def target_levels(self) -> list:
@@ -244,8 +248,22 @@ class Config:
     
     @property
     def map_isochrone_color(self) -> str:
-        """Get isochrone color for map."""
+        """Get default isochrone color for map (used if isochrone_colors not specified)."""
         return self.get('map.isochrone_color', 'blue')
+    
+    @property
+    def map_isochrone_colors(self) -> dict:
+        """Get color mapping for different time ranges (in minutes)."""
+        colors = self.get('map.isochrone_colors', {})
+        if not colors:
+            # Default colors if not specified
+            colors = {
+                15: '#ff0000',  # Red
+                30: '#ff8800',  # Orange
+                45: '#ffaa00'   # Yellow/Amber
+            }
+        # Convert string keys to int if needed
+        return {int(k) if isinstance(k, str) and k.isdigit() else k: v for k, v in colors.items()}
     
     @property
     def map_isochrone_opacity(self) -> float:

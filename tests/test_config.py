@@ -14,7 +14,11 @@ class TestConfig:
         config = Config()
         assert config.ors_base_url is not None
         assert config.input_file is not None
-        assert config.range_seconds == 3600
+        # range_seconds can now be a list or int (backward compatibility)
+        range_sec = config.range_seconds
+        assert isinstance(range_sec, (list, int))
+        if isinstance(range_sec, list):
+            assert len(range_sec) > 0
     
     def test_env_override_string(self, monkeypatch):
         """Test environment variable override for string values."""
@@ -72,8 +76,8 @@ class TestConfig:
         assert isinstance(config.output_csv, str)
         assert isinstance(config.output_map, str)
         
-        # Integer properties
-        assert isinstance(config.range_seconds, int)
+        # Integer properties (range_seconds can be list or int)
+        assert isinstance(config.range_seconds, (list, int))
         assert isinstance(config.ors_timeout, int)
         assert isinstance(config.ors_retry_attempts, int)
         
@@ -85,6 +89,10 @@ class TestConfig:
         # List properties
         assert isinstance(config.target_levels, list)
         assert len(config.target_levels) > 0
+        
+        # Test isochrone colors property
+        assert isinstance(config.map_isochrone_colors, dict)
+        assert len(config.map_isochrone_colors) > 0
     
     def test_config_with_custom_path(self):
         """Test loading config from custom path."""
@@ -100,7 +108,10 @@ analysis:
         try:
             config = Config(config_path=temp_path)
             assert config.ors_base_url == "http://custom:8080/ors"
-            assert config.range_seconds == 7200
+            # Single int value should be converted to list for backward compatibility
+            range_sec = config.range_seconds
+            assert isinstance(range_sec, list)
+            assert range_sec == [7200]
         finally:
             temp_path.unlink()
     

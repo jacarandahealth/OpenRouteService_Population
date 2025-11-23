@@ -29,7 +29,7 @@ def sample_excel_file(sample_facilities_data, tmp_path):
 
 @pytest.fixture
 def sample_isochrone_response():
-    """Sample ORS isochrone response."""
+    """Sample ORS isochrone response with single feature (backward compatibility)."""
     return {
         "type": "FeatureCollection",
         "features": [
@@ -48,6 +48,70 @@ def sample_isochrone_response():
                 "properties": {
                     "group_index": 0,
                     "value": 3600,
+                    "center": [36.8219, -1.2921]
+                }
+            }
+        ]
+    }
+
+
+@pytest.fixture
+def sample_multiple_isochrone_response():
+    """Sample ORS isochrone response with multiple features (15, 30, 45 minutes)."""
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [36.8219, -1.2921],
+                        [36.8250, -1.2921],
+                        [36.8250, -1.2950],
+                        [36.8219, -1.2950],
+                        [36.8219, -1.2921]
+                    ]]
+                },
+                "properties": {
+                    "group_index": 0,
+                    "value": 900,  # 15 minutes
+                    "center": [36.8219, -1.2921]
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [36.8219, -1.2921],
+                        [36.8280, -1.2921],
+                        [36.8280, -1.2980],
+                        [36.8219, -1.2980],
+                        [36.8219, -1.2921]
+                    ]]
+                },
+                "properties": {
+                    "group_index": 0,
+                    "value": 1800,  # 30 minutes
+                    "center": [36.8219, -1.2921]
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [36.8219, -1.2921],
+                        [36.8300, -1.2921],
+                        [36.8300, -1.3000],
+                        [36.8219, -1.3000],
+                        [36.8219, -1.2921]
+                    ]]
+                },
+                "properties": {
+                    "group_index": 0,
+                    "value": 2700,  # 45 minutes
                     "center": [36.8219, -1.2921]
                 }
             }

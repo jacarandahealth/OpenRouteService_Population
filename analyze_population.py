@@ -1,6 +1,7 @@
 """
 Main script for isochrone population analysis.
-Generates 1-hour driving time isochrones for health facilities and calculates population.
+Generates multiple driving time isochrones (15, 30, 45 minutes) for health facilities 
+and calculates population within each isochrone area.
 """
 import ee
 import openrouteservice
@@ -155,25 +156,32 @@ def get_isochrone_with_retry(
     client: openrouteservice.Client,
     lat: float,
     lon: float,
-    range_sec: int = 3600,
+    ranges_sec: list = None,
     max_retries: int = None,
     retry_delay: float = None
 ) -> Optional[Dict[str, Any]]:
     """
-    Generate isochrone with retry logic.
+    Generate multiple isochrones with retry logic.
     
     Args:
         client: OpenRouteService client
         lat: Latitude
         lon: Longitude
-        range_sec: Time range in seconds
+        ranges_sec: List of time ranges in seconds (e.g., [900, 1800, 2700] for 15, 30, 45 min)
+                    If None, uses config default. If single int, converts to list for backward compatibility.
         max_retries: Maximum retry attempts (default from config)
         retry_delay: Initial retry delay in seconds (default from config)
     
     Returns:
-        Isochrone GeoJSON response or None if failed
+        Isochrone GeoJSON response with multiple features, or None if failed
     """
     config = get_config()
+    if ranges_sec is None:
+        ranges_sec = config.range_seconds
+    # Handle backward compatibility - if single value, convert to list
+    if isinstance(ranges_sec, int):
+        ranges_sec = [ranges_sec]
+    
     if max_retries is None:
         max_retries = config.ors_retry_attempts
     if retry_delay is None:
@@ -181,25 +189,25 @@ def get_isochrone_with_retry(
     
     for attempt in range(max_retries):
         try:
-            logger.debug(f"Requesting isochrone for ({lat}, {lon}), attempt {attempt + 1}/{max_retries}")
+            logger.debug(f"Requesting isochrones for ({lat}, {lon}), ranges: {ranges_sec}, attempt {attempt + 1}/{max_retries}")
             iso = client.isochrones(
                 locations=[[lon, lat]],
                 profile='driving-car',
-                range=[range_sec],
+                range=ranges_sec,  # Pass list directly - ORS supports multiple ranges
                 attributes=['total_pop']
             )
-            logger.debug(f"Successfully generated isochrone for ({lat}, {lon})")
+            logger.debug(f"Successfully generated {len(iso.get('features', []))} isochrones for ({lat}, {lon})")
             return iso
         except Exception as e:
             if attempt < max_retries - 1:
                 wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
                 logger.warning(
-                    f"Error generating isochrone for ({lat}, {lon}), attempt {attempt + 1}/{max_retries}: {e}. "
+                    f"Error generating isochrones for ({lat}, {lon}), attempt {attempt + 1}/{max_retries}: {e}. "
                     f"Retrying in {wait_time:.1f}s..."
                 )
                 time.sleep(wait_time)
             else:
-                logger.error(f"Failed to generate isochrone for ({lat}, {lon}) after {max_retries} attempts: {e}")
+                logger.error(f"Failed to generate isochrones for ({lat}, {lon}) after {max_retries} attempts: {e}")
                 return None
     
     return None
@@ -272,7 +280,7 @@ def process_facility(
     config
 ) -> Optional[Dict[str, Any]]:
     """
-    Process a single facility: generate isochrone and calculate population.
+    Process a single facility: generate multiple isochrones and calculate population for each.
     
     Args:
         row: Facility row from DataFrame
@@ -305,44 +313,73 @@ def process_facility(
         logger.error(f"Invalid coordinates for {name}: {e}")
         return None
     
-    # Generate isochrone
-    iso_json = get_isochrone_with_retry(ors_client, lat, lon, config.range_seconds)
+    # Get ranges from config (ensure it's a list)
+    ranges_sec = config.range_seconds
+    if isinstance(ranges_sec, int):
+        ranges_sec = [ranges_sec]
+    
+    # Generate multiple isochrones in one API call
+    iso_json = get_isochrone_with_retry(ors_client, lat, lon, ranges_sec)
     
     if not iso_json or 'features' not in iso_json or len(iso_json['features']) == 0:
-        logger.warning(f"Failed to generate isochrone for {name}")
+        logger.warning(f"Failed to generate isochrones for {name}")
         return None
     
-    # Extract geometry
-    feature = iso_json['features'][0]
-    geom = feature.get('geometry')
+    # Process each isochrone feature
+    isochrones_by_range = {}
+    populations_by_range = {}
     
-    if not geom:
-        logger.warning(f"No geometry in isochrone response for {name}")
-        return None
-    
-    # Calculate population
-    pop = calculate_population_gee(geom)
-    
-    if pop is None:
-        logger.warning(f"Failed to calculate population for {name}, setting to -1")
-        pop = -1
-    
-    logger.info(f"  Population: {pop:,.0f}")
+    for i, feature in enumerate(iso_json['features']):
+        # Get the range for this feature (features are returned in order of ranges)
+        range_sec = ranges_sec[i] if i < len(ranges_sec) else ranges_sec[-1]
+        range_min = range_sec // 60
+        
+        geom = feature.get('geometry')
+        if not geom:
+            logger.warning(f"No geometry in isochrone response for {name} at {range_min} minutes")
+            continue
+        
+        # Calculate population for this isochrone
+        pop = calculate_population_gee(geom)
+        if pop is None:
+            logger.warning(f"Failed to calculate population for {name} at {range_min} minutes, setting to -1")
+            pop = -1
+        
+        logger.info(f"  {range_min}-min isochrone: Population: {pop:,.0f}")
+        
+        # Store isochrone and population by time range
+        isochrones_by_range[range_min] = {
+            'geometry': geom,
+            'feature': feature,
+            'range_seconds': range_sec
+        }
+        populations_by_range[range_min] = pop
     
     # Prepare result
     result = row.to_dict()
-    result['population_1hr'] = pop
-    result['isochrone'] = iso_json
     result['lat'] = lat
     result['lon'] = lon
     result['name'] = name
+    result['isochrones'] = isochrones_by_range  # Changed from single 'isochrone'
+    result['populations'] = populations_by_range
+    
+    # For backward compatibility and map rendering, also store the full GeoJSON
+    result['isochrone_geojson'] = iso_json
+    
+    # Also keep backward-compatible single isochrone field (use largest range)
+    if iso_json['features']:
+        result['isochrone'] = {
+            "type": "FeatureCollection",
+            "features": [iso_json['features'][-1]]  # Largest range
+        }
+        result['population_1hr'] = populations_by_range.get(max(populations_by_range.keys()) if populations_by_range else 0, -1)
     
     return result
 
 
 def create_map(results: list, config) -> folium.Map:
     """
-    Create Folium map with facilities and isochrones.
+    Create Folium map with facilities and multiple colored isochrones.
     
     Args:
         results: List of result dictionaries
@@ -356,30 +393,91 @@ def create_map(results: list, config) -> folium.Map:
         zoom_start=config.map_zoom_start
     )
     
+    # Get color mapping from config
+    color_map = config.map_isochrone_colors
+    
     for result in results:
-        if 'isochrone' not in result:
-            continue
+        # Check for new format (multiple isochrones) or old format (single isochrone)
+        if 'isochrones' in result:
+            # New format: multiple isochrones
+            name = result.get('name', 'Unknown')
+            lat = result.get('lat')
+            lon = result.get('lon')
+            populations = result.get('populations', {})
+            
+            # Add isochrones in reverse order (largest to smallest) so smaller ones appear on top
+            for range_min in sorted(result['isochrones'].keys(), reverse=True):
+                iso_data = result['isochrones'][range_min]
+                pop = populations.get(range_min, 0)
+                color = color_map.get(range_min, config.map_isochrone_color)  # Default color if not specified
+                
+                # Create a GeoJSON feature collection for this single isochrone
+                single_feature_geojson = {
+                    "type": "FeatureCollection",
+                    "features": [iso_data['feature']]
+                }
+                
+                folium.GeoJson(
+                    single_feature_geojson,
+                    style_function=lambda x, c=color: {
+                        'fillColor': c,
+                        'color': c,
+                        'weight': 2,
+                        'fillOpacity': config.map_isochrone_opacity
+                    },
+                    tooltip=f"{name} - {range_min} min: {pop:,.0f} people"
+                ).add_to(m)
+            
+            # Add facility marker
+            if lat is not None and lon is not None:
+                pop_text = ", ".join([f"{k}min: {v:,.0f}" for k, v in sorted(populations.items())])
+                folium.Marker(
+                    [lat, lon],
+                    popup=f"<b>{name}</b><br>Population:<br>{pop_text}",
+                    icon=folium.Icon(color='red', icon='hospital-o', prefix='fa')
+                ).add_to(m)
         
-        name = result.get('name', 'Unknown')
-        pop = result.get('population_1hr', 0)
-        lat = result.get('lat')
-        lon = result.get('lon')
-        
-        # Add isochrone
-        folium.GeoJson(
-            result['isochrone'],
-            style_function=lambda x: {
-                'fillColor': config.map_isochrone_color,
-                'color': config.map_isochrone_color,
-                'weight': 1,
-                'fillOpacity': config.map_isochrone_opacity
-            },
-            tooltip=f"{name}: {pop:,.0f}"
-        ).add_to(m)
-        
-        # Add marker
-        if lat is not None and lon is not None:
-            folium.Marker([lat, lon], popup=f"{name}<br>Population: {pop:,.0f}").add_to(m)
+        elif 'isochrone' in result:
+            # Old format: single isochrone (backward compatibility)
+            name = result.get('name', 'Unknown')
+            pop = result.get('population_1hr', 0)
+            lat = result.get('lat')
+            lon = result.get('lon')
+            
+            # Add isochrone
+            folium.GeoJson(
+                result['isochrone'],
+                style_function=lambda x: {
+                    'fillColor': config.map_isochrone_color,
+                    'color': config.map_isochrone_color,
+                    'weight': 1,
+                    'fillOpacity': config.map_isochrone_opacity
+                },
+                tooltip=f"{name}: {pop:,.0f}"
+            ).add_to(m)
+            
+            # Add marker
+            if lat is not None and lon is not None:
+                folium.Marker([lat, lon], popup=f"{name}<br>Population: {pop:,.0f}").add_to(m)
+    
+    # Add legend if using multiple isochrones
+    if color_map:
+        color_items = sorted(color_map.items())
+        legend_items = "\n".join([
+            f'<p style="margin:5px 0"><span style="color:{color}">●</span> {range_min} minutes</p>'
+            for range_min, color in color_items
+        ])
+        legend_html = f'''
+        <div style="position: fixed; 
+                    bottom: 50px; right: 50px; width: 200px; height: auto; 
+                    background-color: white; z-index:9999; 
+                    border:2px solid grey; padding: 10px;
+                    font-size:14px">
+        <h4 style="margin-top:0">Isochrone Times</h4>
+        {legend_items}
+        </div>
+        '''
+        m.get_root().html.add_child(folium.Element(legend_html))
     
     return m
 
@@ -458,7 +556,14 @@ def main():
             # Prepare DataFrame for CSV (exclude isochrone data)
             csv_data = []
             for result in results:
-                csv_row = {k: v for k, v in result.items() if k != 'isochrone'}
+                csv_row = {k: v for k, v in result.items() 
+                          if k not in ['isochrones', 'isochrone', 'isochrone_geojson']}
+                
+                # Add population columns for each time range
+                populations = result.get('populations', {})
+                for range_min in sorted(populations.keys()):
+                    csv_row[f'population_{range_min}min'] = populations[range_min]
+                
                 csv_data.append(csv_row)
             
             result_df = pd.DataFrame(csv_data)

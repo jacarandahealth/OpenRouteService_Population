@@ -1,14 +1,19 @@
 """
-Create isochrone map for Kakamega County Referral Hospital and calculate population
+Create multi-colored isochrone maps for Kakamega and Wajir County Referral Hospitals.
+Generates 15, 30, and 45 minute isochrones with population calculations for each.
 """
-import requests
+import openrouteservice
 import folium
 import json
 import time
-import ee
 from config import get_config
 from logger import get_logger
 from auth_gee import initialize_gee
+from analyze_population import (
+    get_isochrone_with_retry,
+    calculate_population_gee,
+    validate_coordinates
+)
 
 logger = get_logger(__name__)
 
@@ -20,35 +25,30 @@ facilities = [
     {
         "name": "Kakamega County Referral Hospital",
         "lat": 0.2745556,
-        "lon": 34.7582332,
-        "range_seconds": 2700  # 45 minutes
+        "lon": 34.7582332
     },
     {
         "name": "Wajir County Referral Hospital",
         "lat": 1.74742,
-        "lon": 40.06259,
-        "range_seconds": 2700  # 45 minutes
+        "lon": 40.06259
     }
 ]
 
-# ORS endpoint from config
-ors_base_url = config.ors_base_url
-ors_url = f"{ors_base_url}/v2/isochrones/driving-car"
+# Get time ranges from config (15, 30, 45 minutes)
+ranges_sec = config.range_seconds
+if isinstance(ranges_sec, int):
+    ranges_sec = [ranges_sec]
 
-# Initialize GEE once for all facilities
+# Initialize GEE
 print("Initializing Google Earth Engine...")
 initialize_gee()
-config = get_config()
 
-# Prepare GEE dataset (do this once for efficiency)
-dataset_collection = ee.ImageCollection(config.gee_dataset)
-dataset_2020 = dataset_collection.filterDate('2020-01-01', '2021-01-01')
-collection_size = dataset_2020.size().getInfo()
-if collection_size > 0:
-    gee_dataset = dataset_2020.mosaic()
-else:
-    gee_dataset = dataset_collection.sort('system:time_start', False).first()
-scale_to_use = max(config.gee_scale, 250)
+# Initialize ORS client
+print(f"Connecting to ORS at {config.ors_base_url}...")
+ors_client = openrouteservice.Client(
+    key=config.ors_api_key,
+    base_url=config.ors_base_url
+)
 
 # Process each facility
 results = []
@@ -56,120 +56,138 @@ for facility in facilities:
     facility_name = facility["name"]
     lat = facility["lat"]
     lon = facility["lon"]
-    range_seconds = facility["range_seconds"]
     
     print(f"\n{'='*60}")
     print(f"Processing: {facility_name}")
     print(f"Location: ({lat}, {lon})")
-    print(f"Generating {range_seconds/60:.0f}-minute isochrone...")
     
-    # Request isochrone
-    payload = {
-        "locations": [[lon, lat]],  # ORS expects [lon, lat]
-        "range": [range_seconds],
-        "range_type": "time",
-        "attributes": ["area", "reachfactor", "total_pop"]
-    }
+    # Validate coordinates
+    try:
+        lat, lon = validate_coordinates(lat, lon)
+    except Exception as e:
+        logger.error(f"Invalid coordinates for {facility_name}: {e}")
+        print(f"✗ Invalid coordinates: {e}")
+        continue
     
-    print(f"Requesting isochrone from {ors_url}...")
+    # Generate multiple isochrones (15, 30, 45 minutes)
+    # Note: ORS v8.1.0 only supports 1 isochrone per request, so we make separate calls
+    print(f"Generating isochrones for {', '.join([f'{r//60} min' for r in ranges_sec])}...")
     start_time = time.time()
     
-    try:
-        response = requests.post(
-            ors_url, 
-            json=payload, 
-            headers={"Content-Type": "application/json"},
-            timeout=30
-        )
-        elapsed_time = time.time() - start_time
-    except requests.exceptions.ConnectionError as e:
-        print(f"\n✗ Connection Error: Cannot reach ORS server at {ors_url}")
-        print(f"  Error details: {e}")
-        continue
-    except requests.exceptions.Timeout as e:
-        print(f"\n✗ Timeout Error: Request to {ors_url} timed out")
-        continue
-    except Exception as e:
-        print(f"\n✗ Unexpected Error: {e}")
-        continue
+    isochrones_by_range = {}
+    populations_by_range = {}
+    all_features = []
     
-    if response.status_code != 200:
-        print(f"\n✗ Error: Status {response.status_code}")
-        print(f"Response: {response.text}")
-        continue
-    
-    iso_json = response.json()
-    
-    if not iso_json or 'features' not in iso_json or len(iso_json['features']) == 0:
-        print("Error: No isochrone features returned")
-        continue
-    
-    print(f"Isochrone generated successfully in {elapsed_time:.2f} seconds!")
-    
-    # Extract geometry for population calculation
-    feature = iso_json['features'][0]
-    geom = feature.get('geometry')
-    
-    if not geom:
-        print("Error: No geometry in isochrone response")
-        continue
-    
-    # Calculate population using Google Earth Engine
-    print("Calculating population within isochrone...")
-    try:
-        gee_geom = ee.Geometry(geom)
+    # Generate each isochrone separately
+    for range_sec in ranges_sec:
+        range_min = range_sec // 60
+        print(f"  Requesting {range_min}-minute isochrone...")
         
-        stats = gee_dataset.reduceRegion(
-            reducer=ee.Reducer.sum(),
-            geometry=gee_geom,
-            scale=scale_to_use,
-            maxPixels=config.gee_max_pixels
-        )
+        # Request single isochrone
+        iso_json = get_isochrone_with_retry(ors_client, lat, lon, [range_sec])
         
-        all_stats = stats.getInfo()
-        population = all_stats.get('population') if all_stats else None
+        if not iso_json or 'features' not in iso_json or len(iso_json['features']) == 0:
+            logger.warning(f"Failed to generate isochrone for {facility_name} at {range_min} minutes")
+            continue
         
-        if population is None:
-            logger.warning(f"GEE returned None for {facility_name}")
-            population = 0
+        feature = iso_json['features'][0]
+        geom = feature.get('geometry')
+        
+        if not geom:
+            logger.warning(f"No geometry in isochrone response for {facility_name} at {range_min} minutes")
+            continue
+        
+        # Calculate population for this isochrone
+        print(f"    Calculating population...")
+        pop = calculate_population_gee(geom)
+        
+        if pop is None:
+            logger.warning(f"Failed to calculate population for {facility_name} at {range_min} minutes")
+            pop = -1
         else:
-            population = float(population)
+            print(f"    Population: {pop:,.0f} people")
         
-        print(f"Population: {population:,.0f} people")
+        isochrones_by_range[range_min] = {
+            'geometry': geom,
+            'feature': feature,
+            'range_seconds': range_sec
+        }
+        populations_by_range[range_min] = pop
+        all_features.append(feature)
         
-    except Exception as e:
-        logger.error(f"GEE population calculation error for {facility_name}: {e}", exc_info=True)
-        print(f"Error calculating population: {e}")
-        population = None
+        # Small delay between requests
+        time.sleep(config.sleep_between_requests)
+    
+    if not isochrones_by_range:
+        print("✗ Error: Failed to generate any isochrones")
+        continue
+    
+    elapsed_time = time.time() - start_time
+    print(f"✓ Generated {len(isochrones_by_range)} isochrones in {elapsed_time:.2f} seconds!")
+    
+    # Create combined GeoJSON for storage
+    combined_geojson = {
+        "type": "FeatureCollection",
+        "features": all_features
+    }
     
     # Store results
     results.append({
         "name": facility_name,
         "lat": lat,
         "lon": lon,
-        "range_seconds": range_seconds,
-        "isochrone": iso_json,
-        "population": population
+        "isochrones": isochrones_by_range,
+        "populations": populations_by_range,
+        "isochrone_geojson": combined_geojson
     })
-    
-    # Small delay between requests
-    time.sleep(1)
 
-# Print summary
+# Print summary with totals
 print(f"\n{'='*60}")
-print("SUMMARY")
+print("POPULATION SUMMARY")
 print(f"{'='*60}")
-total_population = 0
+
+# Calculate totals
+total_15min = 0
+total_30min = 0
+total_45min = 0
+facility_totals = {}
+
 for result in results:
-    pop = result.get('population', 0) if result.get('population') is not None else 0
-    total_population += pop
-    print(f"{result['name']}: {pop:,.0f} people")
+    facility_name = result['name']
+    populations = result.get('populations', {})
+    
+    # Calculate facility total (using 45-min as it's the largest catchment)
+    facility_total = populations.get(45, 0) if 45 in populations and populations[45] >= 0 else 0
+    facility_totals[facility_name] = facility_total
+    
+    print(f"\n{facility_name}:")
+    for range_min in sorted(populations.keys()):
+        pop = populations[range_min]
+        if pop >= 0:
+            print(f"  {range_min}-min isochrone: {pop:,.0f} people")
+            # Add to combined totals
+            if range_min == 15:
+                total_15min += pop
+            elif range_min == 30:
+                total_30min += pop
+            elif range_min == 45:
+                total_45min += pop
+        else:
+            print(f"  {range_min}-min isochrone: Calculation failed")
+    
+    print(f"  → Facility Total (45-min catchment): {facility_total:,.0f} people")
+
+print(f"\n{'='*60}")
+print("COMBINED TOTALS (All Facilities)")
 print(f"{'='*60}")
-print(f"Total Population (both facilities): {total_population:,.0f} people")
+print(f"  15-min isochrones combined: {total_15min:,.0f} people")
+print(f"  30-min isochrones combined: {total_30min:,.0f} people")
+print(f"  45-min isochrones combined: {total_45min:,.0f} people")
+print(f"  → Grand Total (45-min catchments): {sum(facility_totals.values()):,.0f} people")
 print(f"{'='*60}")
 
 # Create map with all facilities
-print("\nCreating map with all facilities...")
+print("\nCreating map with multi-colored isochrones...")
 
 # Calculate center point for map view
 if results:
@@ -180,77 +198,134 @@ if results:
         zoom_start=7  # Zoomed out to show both facilities
     )
     
-    # Color scheme for different facilities
-    colors = ['#3388ff', '#ff5733', '#33ff57', '#ff33f5', '#f5ff33']
+    # Get color mapping from config
+    color_map = config.map_isochrone_colors
     
-    for i, result in enumerate(results):
-        color = colors[i % len(colors)]
+    for result in results:
         facility_name = result['name']
         lat = result['lat']
         lon = result['lon']
-        range_seconds = result['range_seconds']
-        population = result.get('population')
-        iso_json = result['isochrone']
+        populations = result.get('populations', {})
         
-        # Add isochrone
-        folium.GeoJson(
-            iso_json,
-            style_function=lambda x, c=color: {
-                'fillColor': c,
-                'color': c,
-                'weight': 2,
-                'fillOpacity': 0.4
-            },
-            tooltip=f"{facility_name} - {range_seconds/60:.0f} min<br>Population: {population:,.0f}" if population else f"{facility_name} - {range_seconds/60:.0f} min"
-        ).add_to(m)
+        # Add isochrones in reverse order (45, 30, 15) so smaller ones appear on top
+        for range_min in sorted(result['isochrones'].keys(), reverse=True):
+            iso_data = result['isochrones'][range_min]
+            pop = populations.get(range_min, 0)
+            color = color_map.get(range_min, config.map_isochrone_color)
+            
+            # Create a GeoJSON feature collection for this single isochrone
+            single_feature_geojson = {
+                "type": "FeatureCollection",
+                "features": [iso_data['feature']]
+            }
+            
+            folium.GeoJson(
+                single_feature_geojson,
+                style_function=lambda x, c=color: {
+                    'fillColor': c,
+                    'color': c,
+                    'weight': 2,
+                    'fillOpacity': config.map_isochrone_opacity
+                },
+                tooltip=f"{facility_name} - {range_min} min: {pop:,.0f} people" if pop >= 0 else f"{facility_name} - {range_min} min"
+            ).add_to(m)
         
-        # Add hospital marker
+        # Add facility marker with detailed population info
+        pop_lines = []
+        facility_total = 0
+        for k, v in sorted(populations.items()):
+            if v >= 0:
+                pop_lines.append(f"{k} min: {v:,.0f}")
+                if k == 45:  # Use 45-min as facility total
+                    facility_total = v
+            else:
+                pop_lines.append(f"{k} min: N/A")
+        
+        pop_text = "<br>".join(pop_lines)
+        if facility_total > 0:
+            pop_text += f"<br><b>Total (45-min): {facility_total:,.0f}</b>"
+        
         folium.Marker(
             [lat, lon],
-            popup=f"<b>{facility_name}</b><br>Coordinates: {lat}, {lon}<br>Population: {population:,.0f}" if population else f"<b>{facility_name}</b><br>Coordinates: {lat}, {lon}",
-            tooltip=facility_name,
+            popup=f"<b>{facility_name}</b><br>Coordinates: {lat}, {lon}<br><br>Population:<br>{pop_text}",
+            tooltip=f"{facility_name}<br>Total: {facility_total:,.0f}" if facility_total > 0 else facility_name,
             icon=folium.Icon(color='red', icon='hospital-o', prefix='fa')
         ).add_to(m)
     
-    # Add legend
-    legend_html = '''
-    <div style="position: fixed; 
-                bottom: 50px; right: 50px; width: 200px; 
-                background-color: white; z-index:9999; 
-                border:2px solid grey; padding: 10px;
-                font-size:12px">
-    <h4 style="margin-top:0">Facilities</h4>
-    '''
-    for i, result in enumerate(results):
-        color = colors[i % len(colors)]
-        pop = result.get('population', 0) if result.get('population') is not None else 0
-        legend_html += f'<p style="margin:5px 0;"><span style="color:{color};font-weight:bold;">■</span> {result["name"]}<br><small>Pop: {pop:,.0f}</small></p>'
-    legend_html += '</div>'
-    m.get_root().html.add_child(folium.Element(legend_html))
+    # Add legend for time ranges with combined totals
+    if color_map:
+        color_items = sorted(color_map.items())
+        
+        # Map totals to time ranges
+        totals_map = {
+            15: total_15min,
+            30: total_30min,
+            45: total_45min
+        }
+        
+        legend_items = "\n".join([
+            f'<p style="margin:5px 0;"><span style="color:{color}">●</span> {range_min} minutes<br><small style="margin-left:20px;">Total: {totals_map.get(range_min, 0):,.0f} people</small></p>'
+            for range_min, color in color_items
+        ])
+        
+        # Add grand total at the bottom
+        grand_total = sum(facility_totals.values())
+        legend_items += f'<hr style="margin:10px 0;"><p style="margin:5px 0;"><b>Grand Total (45-min):</b><br><small style="margin-left:20px;">{grand_total:,.0f} people</small></p>'
+        
+        legend_html = f'''
+        <div style="position: fixed; 
+                    bottom: 50px; right: 50px; width: 250px; height: auto; 
+                    background-color: white; z-index:9999; 
+                    border:2px solid grey; padding: 10px;
+                    font-size:14px">
+        <h4 style="margin-top:0">Isochrone Times & Totals</h4>
+        {legend_items}
+        </div>
+        '''
+        m.get_root().html.add_child(folium.Element(legend_html))
     
     # Save map
-    output_file = "kenya_facilities_isochrone_map.html"
+    output_file = "kakamega_wajir_isochrone_map.html"
     m.save(output_file)
-    print(f"Map saved to: {output_file}")
+    print(f"✓ Map saved to: {output_file}")
     print(f"\nOpen {output_file} in your browser to view the map!")
     
-    # Save results JSON
-    results_json = {
-        "facilities": [
-            {
-                "name": r["name"],
-                "lat": r["lat"],
-                "lon": r["lon"],
-                "range_minutes": r["range_seconds"] / 60,
-                "population": r.get("population")
-            }
-            for r in results
-        ],
-        "total_population": total_population
+    # Save results JSON with totals
+    facilities_data = []
+    for r in results:
+        populations = r.get("populations", {})
+        facility_total = populations.get(45, 0) if 45 in populations and populations[45] >= 0 else 0
+        
+        facilities_data.append({
+            "name": r["name"],
+            "lat": r["lat"],
+            "lon": r["lon"],
+            "populations": {
+                f"{k}_min": v for k, v in populations.items()
+            },
+            "facility_total_45min": facility_total
+        })
+    
+    # Calculate combined totals
+    combined_totals = {
+        "15_min": total_15min,
+        "30_min": total_30min,
+        "45_min": total_45min,
+        "grand_total_45min": sum(facility_totals.values())
     }
-    with open("facilities_isochrone_results.json", "w") as f:
+    
+    results_json = {
+        "facilities": facilities_data,
+        "combined_totals": combined_totals,
+        "summary": {
+            "total_facilities": len(results),
+            "facility_totals": {name: total for name, total in facility_totals.items()}
+        }
+    }
+    
+    with open("kakamega_wajir_isochrone_results.json", "w") as f:
         json.dump(results_json, f, indent=2)
-    print("Results saved to: facilities_isochrone_results.json")
+    print("✓ Results saved to: kakamega_wajir_isochrone_results.json")
 else:
-    print("No facilities processed successfully")
+    print("✗ No facilities processed successfully")
 

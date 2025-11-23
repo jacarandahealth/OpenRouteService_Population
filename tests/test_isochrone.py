@@ -92,9 +92,9 @@ class TestIsochroneGeneration:
         assert result is None
         assert mock_client.isochrones.call_count == 2
     
-    def test_get_isochrone_correct_parameters(self, mock_ors_client):
-        """Test that isochrone is called with correct parameters."""
-        get_isochrone_with_retry(mock_ors_client, -1.2921, 36.8219, range_sec=7200)
+    def test_get_isochrone_correct_parameters_single_range(self, mock_ors_client):
+        """Test that isochrone is called with correct parameters for single range."""
+        get_isochrone_with_retry(mock_ors_client, -1.2921, 36.8219, ranges_sec=[7200])
         
         call_args = mock_ors_client.isochrones.call_args
         assert call_args is not None
@@ -103,4 +103,27 @@ class TestIsochroneGeneration:
         assert kwargs['locations'] == [[36.8219, -1.2921]]  # Note: lon, lat order
         assert kwargs['profile'] == 'driving-car'
         assert kwargs['range'] == [7200]
+    
+    def test_get_isochrone_multiple_ranges(self, mock_ors_client):
+        """Test that isochrone is called with correct parameters for multiple ranges."""
+        ranges = [900, 1800, 2700]  # 15, 30, 45 minutes
+        get_isochrone_with_retry(mock_ors_client, -1.2921, 36.8219, ranges_sec=ranges)
+        
+        call_args = mock_ors_client.isochrones.call_args
+        assert call_args is not None
+        
+        kwargs = call_args.kwargs
+        assert kwargs['locations'] == [[36.8219, -1.2921]]
+        assert kwargs['profile'] == 'driving-car'
+        assert kwargs['range'] == ranges
+    
+    def test_get_isochrone_backward_compatibility_int(self, mock_ors_client):
+        """Test backward compatibility with single int range."""
+        get_isochrone_with_retry(mock_ors_client, -1.2921, 36.8219, ranges_sec=3600)
+        
+        call_args = mock_ors_client.isochrones.call_args
+        assert call_args is not None
+        
+        kwargs = call_args.kwargs
+        assert kwargs['range'] == [3600]  # Should be converted to list
 
