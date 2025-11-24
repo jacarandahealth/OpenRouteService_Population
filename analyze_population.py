@@ -471,6 +471,13 @@ def create_map(results: list, config) -> folium.Map:
     # Get color mapping from config
     color_map = config.map_isochrone_colors
     
+    # Define darker border colors for each time range
+    border_color_map = {
+        15: "#1565C0",  # Dark blue
+        30: "#6A1B9A",  # Dark purple
+        45: "#C62828"   # Dark red
+    }
+    
     for result in results:
         # Check for new format (multiple isochrones) or old format (single isochrone)
         if 'isochrones' in result:
@@ -485,6 +492,7 @@ def create_map(results: list, config) -> folium.Map:
                 iso_data = result['isochrones'][range_min]
                 pop = populations.get(range_min, 0)
                 color = color_map.get(range_min, config.map_isochrone_color)  # Default color if not specified
+                border_color = border_color_map.get(range_min, color)  # Use darker border color
                 
                 # Create a GeoJSON feature collection for this single isochrone
                 single_feature_geojson = {
@@ -494,9 +502,9 @@ def create_map(results: list, config) -> folium.Map:
                 
                 folium.GeoJson(
                     single_feature_geojson,
-                    style_function=lambda x, c=color: {
-                        'fillColor': c,
-                        'color': c,
+                    style_function=lambda x, fill_c=color, border_c=border_color: {
+                        'fillColor': fill_c,
+                        'color': border_c,
                         'weight': 2,
                         'fillOpacity': config.map_isochrone_opacity
                     },
@@ -618,6 +626,11 @@ def main():
         if len(df) == 0:
             logger.error("No facilities to process after filtering")
             return
+        
+        # Randomly sample 30% of facilities for faster test run
+        original_count = len(df)
+        df = df.sample(frac=0.3, random_state=42)
+        logger.info(f"Randomly sampled 30% of facilities: {len(df)} out of {original_count} facilities")
         
         # 3. Initialize ORS client
         logger.info(f"Connecting to ORS at {config.ors_base_url}...")

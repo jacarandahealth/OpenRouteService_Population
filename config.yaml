@@ -14,7 +14,7 @@ ors:
 files:
   input_file: "KMHFR_MNCH_Facilities_Only.xlsx"
   output_csv: "json/population_analysis_results.csv"
-  output_map: "maps/isochrone_map.html"
+  output_map: "maps/isochrone_map_test.html"
 
 # Analysis Parameters
 analysis:
@@ -44,8 +44,8 @@ map:
   zoom_start: 6
   isochrone_color: "blue"  # Default color (used if isochrone_colors not specified)
   isochrone_colors:  # Color mapping for different time ranges (in minutes)
-    15: "#ffeb3b"  # Bright Yellow for 15 minutes
-    30: "#ffc107"  # Darker Yellow/Amber for 30 minutes
-    45: "#ff9800"  # Orange for 45 minutes
-  isochrone_opacity: 0.24  # Reduced by 20% from 0.3
+    15: "#2196F3"  # Blue for 15 minutes
+    30: "#9C27B0"  # Purple for 30 minutes
+    45: "#F44336"  # Red for 45 minutes
+  isochrone_opacity: 0.216  # Reduced by 10% from 0.24
 

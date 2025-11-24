@@ -201,6 +201,13 @@ if results:
     # Get color mapping from config
     color_map = config.map_isochrone_colors
     
+    # Define darker border colors for each time range
+    border_color_map = {
+        15: "#1565C0",  # Dark blue
+        30: "#6A1B9A",  # Dark purple
+        45: "#C62828"   # Dark red
+    }
+    
     for result in results:
         facility_name = result['name']
         lat = result['lat']
@@ -212,6 +219,7 @@ if results:
             iso_data = result['isochrones'][range_min]
             pop = populations.get(range_min, 0)
             color = color_map.get(range_min, config.map_isochrone_color)
+            border_color = border_color_map.get(range_min, color)  # Use darker border color
             
             # Create a GeoJSON feature collection for this single isochrone
             single_feature_geojson = {
@@ -221,9 +229,9 @@ if results:
             
             folium.GeoJson(
                 single_feature_geojson,
-                style_function=lambda x, c=color: {
-                    'fillColor': c,
-                    'color': c,
+                style_function=lambda x, fill_c=color, border_c=border_color: {
+                    'fillColor': fill_c,
+                    'color': border_c,
                     'weight': 2,
                     'fillOpacity': config.map_isochrone_opacity
                 },
