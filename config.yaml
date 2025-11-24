@@ -19,7 +19,7 @@ files:
 # Analysis Parameters
 analysis:
   range_seconds: [900, 1800, 2700]  # 15, 30, 45 minutes in seconds (can be single value or list)
-  target_levels: ["4", "5", "6"]  # Facility levels to filter
+  target_levels: ["5", "6"]  # Facility levels to filter
   sleep_between_requests: 0.5  # seconds to wait between ORS API calls
 
 # Google Earth Engine Configuration
@@ -44,8 +44,8 @@ map:
   zoom_start: 6
   isochrone_color: "blue"  # Default color (used if isochrone_colors not specified)
   isochrone_colors:  # Color mapping for different time ranges (in minutes)
-    15: "#ff0000"  # Red for 15 minutes
-    30: "#ffaa00"  # Orange/Amber for 30 minutes
-    45: "#00aa00"  # Green for 45 minutes
-  isochrone_opacity: 0.3
+    15: "#ffeb3b"  # Bright Yellow for 15 minutes
+    30: "#ffc107"  # Darker Yellow/Amber for 30 minutes
+    45: "#ff9800"  # Orange for 45 minutes
+  isochrone_opacity: 0.24  # Reduced by 20% from 0.3
 

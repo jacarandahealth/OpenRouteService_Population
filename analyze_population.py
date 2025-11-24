@@ -63,6 +63,7 @@ def validate_coordinates(lat: float, lon: float) -> Tuple[float, float]:
 def find_column_by_pattern(df: pd.DataFrame, patterns: list, default: str = None) -> Optional[str]:
     """
     Find column in DataFrame matching any of the given patterns (case-insensitive).
+    Prioritizes exact matches, then columns that start/end with the pattern.
     
     Args:
         df: DataFrame to search
@@ -73,9 +74,24 @@ def find_column_by_pattern(df: pd.DataFrame, patterns: list, default: str = None
         Column name if found, or default if provided, or None
     """
     for pattern in patterns:
-        matching_cols = [c for c in df.columns if pattern.lower() in c.lower()]
-        if matching_cols:
-            return matching_cols[0]
+        pattern_lower = pattern.lower()
+        # First try exact match (case-insensitive)
+        exact_match = [c for c in df.columns if c.lower() == pattern_lower]
+        if exact_match:
+            return exact_match[0]
+        
+        # Then try columns that start or end with the pattern (word boundary)
+        word_boundary_match = [
+            c for c in df.columns 
+            if c.lower().startswith(pattern_lower) or c.lower().endswith(pattern_lower)
+        ]
+        if word_boundary_match:
+            return word_boundary_match[0]
+        
+        # Finally try any column containing the pattern (fallback)
+        containing_match = [c for c in df.columns if pattern_lower in c.lower()]
+        if containing_match:
+            return containing_match[0]
     
     return default
 
@@ -134,8 +150,12 @@ def load_and_filter_data(filepath: str, target_levels: list = None) -> pd.DataFr
     # Normalize column names (strip whitespace)
     df.columns = [c.strip() for c in df.columns]
     
-    # Find level column
-    level_col = find_column_by_pattern(df, ['level'], None)
+    # Find level column - prefer 'keph_level_name' over 'keph_level' (UUID)
+    level_col = None
+    if 'keph_level_name' in df.columns:
+        level_col = 'keph_level_name'
+    else:
+        level_col = find_column_by_pattern(df, ['level'], None)
     
     if not level_col:
         raise ValueError("Could not find a 'Level' column. Please check the Excel file.")
@@ -277,7 +297,9 @@ def process_facility(
     row: pd.Series,
     df: pd.DataFrame,
     ors_client: openrouteservice.Client,
-    config
+    config,
+    facility_num: int = None,
+    total: int = None
 ) -> Optional[Dict[str, Any]]:
     """
     Process a single facility: generate multiple isochrones and calculate population for each.
@@ -293,18 +315,46 @@ def process_facility(
     """
     # Find coordinate and name columns
     lat_col = find_column_by_pattern(df, ['lat'], 'Latitude')
-    lon_col = find_column_by_pattern(df, ['lon'], 'Longitude')
+    lon_col = find_column_by_pattern(df, ['lon', 'long'], 'Longitude')  # Handle both 'lon' and 'long'
     name_col = find_column_by_pattern(df, ['name'], 'Facility Name')
     
     try:
-        lat = row[lat_col]
-        lon = row[lon_col]
-        name = row[name_col] if name_col else f"Facility at ({lat}, {lon})"
+        lat_raw = row[lat_col]
+        lon_raw = row[lon_col]
+        name = row[name_col] if name_col else f"Facility at ({lat_raw}, {lon_raw})"
     except KeyError as e:
         logger.error(f"Missing required column: {e}")
         return None
     
+    # Convert to numeric, handling string values and NaN
+    try:
+        lat_raw = pd.to_numeric(lat_raw, errors='coerce')
+        lon_raw = pd.to_numeric(lon_raw, errors='coerce')
+    except (ValueError, TypeError):
+        pass  # Will be caught by validate_coordinates
+    
+    # Check if coordinates are swapped (Kenya lat: -4.5 to 5.5, lon: 33.9 to 41.9)
+    # If lat is > 10 or lon is < -5, they're likely swapped
+    if (lat_raw is not None and lon_raw is not None and 
+        not pd.isna(lat_raw) and not pd.isna(lon_raw)):
+        if (lat_raw > 10 or lon_raw < -5):
+            # Coordinates are swapped, swap them back
+            lat, lon = lon_raw, lat_raw
+            logger.debug(f"Swapped coordinates for {name}: ({lat_raw}, {lon_raw}) -> ({lat}, {lon})")
+        else:
+            lat, lon = lat_raw, lon_raw
+    else:
+        lat, lon = lat_raw, lon_raw
+    
+    # Show progress info if provided
+    progress_info = ""
+    if facility_num is not None and total is not None:
+        progress_pct = (facility_num / total) * 100
+        progress_info = f" [{facility_num}/{total} - {progress_pct:.1f}%]"
+    
     logger.info(f"Processing {name} ({lat}, {lon})...")
+    print(f"  Facility: {name}{progress_info}")
+    print(f"  Location: ({lat:.6f}, {lon:.6f})")
     
     # Validate coordinates
     try:
@@ -318,32 +368,43 @@ def process_facility(
     if isinstance(ranges_sec, int):
         ranges_sec = [ranges_sec]
     
-    # Generate multiple isochrones in one API call
-    iso_json = get_isochrone_with_retry(ors_client, lat, lon, ranges_sec)
-    
-    if not iso_json or 'features' not in iso_json or len(iso_json['features']) == 0:
-        logger.warning(f"Failed to generate isochrones for {name}")
-        return None
-    
-    # Process each isochrone feature
+    # Generate each isochrone separately (ORS v8.1.0 only supports 1 isochrone per request)
     isochrones_by_range = {}
     populations_by_range = {}
+    all_features = []
     
-    for i, feature in enumerate(iso_json['features']):
-        # Get the range for this feature (features are returned in order of ranges)
-        range_sec = ranges_sec[i] if i < len(ranges_sec) else ranges_sec[-1]
+    for range_sec in ranges_sec:
         range_min = range_sec // 60
+        logger.debug(f"Requesting {range_min}-minute isochrone for {name}...")
+        print(f"    Generating {range_min}-minute isochrone...", end=" ", flush=True)
         
-        geom = feature.get('geometry')
-        if not geom:
-            logger.warning(f"No geometry in isochrone response for {name} at {range_min} minutes")
+        # Request single isochrone
+        iso_json = get_isochrone_with_retry(ors_client, lat, lon, [range_sec])
+        
+        if not iso_json or 'features' not in iso_json or len(iso_json['features']) == 0:
+            logger.warning(f"Failed to generate isochrone for {name} at {range_min} minutes")
+            print("[FAILED]")
             continue
         
+        feature = iso_json['features'][0]
+        geom = feature.get('geometry')
+        
+        if not geom:
+            logger.warning(f"No geometry in isochrone response for {name} at {range_min} minutes")
+            print("[NO GEOMETRY]")
+            continue
+        
+        print("[OK]", end=" ", flush=True)
+        
         # Calculate population for this isochrone
+        print("Calculating population...", end=" ", flush=True)
         pop = calculate_population_gee(geom)
         if pop is None:
             logger.warning(f"Failed to calculate population for {name} at {range_min} minutes, setting to -1")
             pop = -1
+            print("[FAILED]")
+        else:
+            print(f"[OK] Population: {pop:,.0f}")
         
         logger.info(f"  {range_min}-min isochrone: Population: {pop:,.0f}")
         
@@ -354,6 +415,20 @@ def process_facility(
             'range_seconds': range_sec
         }
         populations_by_range[range_min] = pop
+        all_features.append(feature)
+        
+        # Small delay between requests
+        time.sleep(config.sleep_between_requests)
+    
+    if not isochrones_by_range:
+        logger.warning(f"Failed to generate any isochrones for {name}")
+        return None
+    
+    # Create combined GeoJSON for storage
+    combined_geojson = {
+        "type": "FeatureCollection",
+        "features": all_features
+    }
     
     # Prepare result
     result = row.to_dict()
@@ -364,13 +439,13 @@ def process_facility(
     result['populations'] = populations_by_range
     
     # For backward compatibility and map rendering, also store the full GeoJSON
-    result['isochrone_geojson'] = iso_json
+    result['isochrone_geojson'] = combined_geojson
     
     # Also keep backward-compatible single isochrone field (use largest range)
-    if iso_json['features']:
+    if all_features:
         result['isochrone'] = {
             "type": "FeatureCollection",
-            "features": [iso_json['features'][-1]]  # Largest range
+            "features": [all_features[-1]]  # Largest range
         }
         result['population_1hr'] = populations_by_range.get(max(populations_by_range.keys()) if populations_by_range else 0, -1)
     
@@ -428,13 +503,18 @@ def create_map(results: list, config) -> folium.Map:
                     tooltip=f"{name} - {range_min} min: {pop:,.0f} people"
                 ).add_to(m)
             
-            # Add facility marker
+            # Add facility marker (smaller circle marker)
             if lat is not None and lon is not None:
                 pop_text = ", ".join([f"{k}min: {v:,.0f}" for k, v in sorted(populations.items())])
-                folium.Marker(
+                folium.CircleMarker(
                     [lat, lon],
+                    radius=5,  # Smaller marker size
                     popup=f"<b>{name}</b><br>Population:<br>{pop_text}",
-                    icon=folium.Icon(color='red', icon='hospital-o', prefix='fa')
+                    color='red',
+                    fill=True,
+                    fillColor='red',
+                    fillOpacity=0.8,
+                    weight=2
                 ).add_to(m)
         
         elif 'isochrone' in result:
@@ -456,24 +536,59 @@ def create_map(results: list, config) -> folium.Map:
                 tooltip=f"{name}: {pop:,.0f}"
             ).add_to(m)
             
-            # Add marker
+            # Add marker (smaller circle marker)
             if lat is not None and lon is not None:
-                folium.Marker([lat, lon], popup=f"{name}<br>Population: {pop:,.0f}").add_to(m)
+                folium.CircleMarker(
+                    [lat, lon],
+                    radius=5,  # Smaller marker size
+                    popup=f"{name}<br>Population: {pop:,.0f}",
+                    color='red',
+                    fill=True,
+                    fillColor='red',
+                    fillOpacity=0.8,
+                    weight=2
+                ).add_to(m)
     
-    # Add legend if using multiple isochrones
+    # Add legend with totals if using multiple isochrones
     if color_map:
+        # Calculate combined totals across all facilities
+        total_15min = 0
+        total_30min = 0
+        total_45min = 0
+        
+        for result in results:
+            if 'populations' in result:
+                populations = result.get('populations', {})
+                if 15 in populations and populations[15] >= 0:
+                    total_15min += populations[15]
+                if 30 in populations and populations[30] >= 0:
+                    total_30min += populations[30]
+                if 45 in populations and populations[45] >= 0:
+                    total_45min += populations[45]
+        
+        totals_map = {
+            15: total_15min,
+            30: total_30min,
+            45: total_45min
+        }
+        
         color_items = sorted(color_map.items())
         legend_items = "\n".join([
-            f'<p style="margin:5px 0"><span style="color:{color}">●</span> {range_min} minutes</p>'
+            f'<p style="margin:5px 0"><span style="color:{color}">●</span> {range_min} minutes<br><small style="margin-left:20px;">Total: {totals_map.get(range_min, 0):,.0f} people</small></p>'
             for range_min, color in color_items
         ])
+        
+        # Add grand total
+        grand_total = total_45min
+        legend_items += f'<hr style="margin:10px 0;"><p style="margin:5px 0;"><b>Grand Total (45-min):</b><br><small style="margin-left:20px;">{grand_total:,.0f} people</small></p>'
+        
         legend_html = f'''
         <div style="position: fixed; 
-                    bottom: 50px; right: 50px; width: 200px; height: auto; 
+                    bottom: 50px; right: 50px; width: 250px; height: auto; 
                     background-color: white; z-index:9999; 
                     border:2px solid grey; padding: 10px;
                     font-size:14px">
-        <h4 style="margin-top:0">Isochrone Times</h4>
+        <h4 style="margin-top:0">Isochrone Times & Totals</h4>
         {legend_items}
         </div>
         '''
@@ -539,16 +654,29 @@ def main():
         results = []
         total = len(df)
         logger.info(f"Processing {total} facilities...")
+        print(f"\n{'='*70}")
+        print(f"Processing {total} facilities...")
+        print(f"{'='*70}\n")
         
-        for index, row in df.iterrows():
-            result = process_facility(row, df, ors_client, config)
+        for idx, (index, row) in enumerate(df.iterrows(), 1):
+            # Calculate progress
+            progress_pct = (idx / total) * 100
+            print(f"[{idx}/{total}] ({progress_pct:.1f}%) Processing facility {idx}...")
+            
+            result = process_facility(row, df, ors_client, config, facility_num=idx, total=total)
             
             if result:
                 results.append(result)
+                print(f"  [SUCCESS] Successfully processed: {result.get('name', 'Unknown')}\n")
+            else:
+                print(f"  [FAILED] Failed to process facility {idx}\n")
             
             # Sleep between requests to be nice to the server
             time.sleep(config.sleep_between_requests)
         
+        print(f"\n{'='*70}")
+        print(f"Processing complete: {len(results)} out of {total} facilities successfully processed")
+        print(f"{'='*70}\n")
         logger.info(f"Successfully processed {len(results)} out of {total} facilities")
         
         # 5. Save results
